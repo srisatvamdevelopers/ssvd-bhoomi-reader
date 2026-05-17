@@ -4,6 +4,9 @@ import { extname, join, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { setDefaultResultOrder } from "node:dns";
+
+setDefaultResultOrder("ipv4first");
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = process.cwd();
@@ -20,6 +23,8 @@ const ECHAWADI_BASE_URL = "https://rdservices.karnataka.gov.in";
 const ECHAWADI_API_URL = `${ECHAWADI_BASE_URL}/echawadi/Home`;
 const REPORT_TASK_TIMEOUT_MS = 26000;
 const REPORT_ENRICH_TIMEOUT_MS = 10000;
+const OFFICIAL_FETCH_TIMEOUT_MS = 12000;
+const OFFICIAL_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 const sessions = new Map();
 const documents = new Map();
@@ -33,6 +38,49 @@ function withReportTimeout(promise, timeoutMs, message) {
     Promise.resolve(promise).finally(() => clearTimeout(timeoutId)),
     timeout,
   ]);
+}
+
+function officialHeaders(headers = {}) {
+  return Object.fromEntries(Object.entries({
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "accept-language": "en-IN,en;q=0.9,kn;q=0.8",
+    "cache-control": "no-cache",
+    pragma: "no-cache",
+    "user-agent": OFFICIAL_USER_AGENT,
+    ...headers,
+  }).filter(([, value]) => value !== undefined && value !== null && value !== ""));
+}
+
+function describeRequestError(error) {
+  const parts = [];
+  for (let item = error; item; item = item.cause) {
+    if (item.code) parts.push(item.code);
+    if (item.message) parts.push(item.message);
+  }
+  return [...new Set(parts)].join(" - ") || "network request failed";
+}
+
+async function officialFetch(url, options = {}, label = "Official service") {
+  const { headers = {}, timeoutMs = OFFICIAL_FETCH_TIMEOUT_MS, retries = 1, ...fetchOptions } = options;
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, {
+        ...fetchOptions,
+        headers: officialHeaders(headers),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw new Error(`${label} request failed: ${describeRequestError(lastError)}`);
 }
 
 const currentFields = {
@@ -564,14 +612,13 @@ async function fetchAkarbandJson(path, payload = {}) {
   for (const [key, value] of Object.entries(payload)) {
     form.set(key, String(value ?? ""));
   }
-  const response = await fetch(`${AKARBAND_API_URL}/${path}`, {
+  const response = await officialFetch(`${AKARBAND_API_URL}/${path}`, {
     method: "POST",
     headers: {
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
       referer: `${AKARBAND_BASE_URL}/service39/`,
     },
     body: form,
-  });
+  }, "Akarband service");
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Akarband service returned HTTP ${response.status}`);
@@ -580,15 +627,14 @@ async function fetchAkarbandJson(path, payload = {}) {
 }
 
 async function fetchEchawadiJson(path, payload = {}) {
-  const response = await fetch(`${ECHAWADI_API_URL}/${path}`, {
+  const response = await officialFetch(`${ECHAWADI_API_URL}/${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
       referer: `${ECHAWADI_BASE_URL}/echawadi/`,
     },
     body: JSON.stringify(payload),
-  });
+  }, "eChawadi service");
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`eChawadi service returned HTTP ${response.status}`);
@@ -598,15 +644,14 @@ async function fetchEchawadiJson(path, payload = {}) {
 }
 
 async function fetchAdvancedRtcJson(path, payload = {}) {
-  const response = await fetch(`${ADVANCED_RTC_API_URL}/${path}`, {
+  const response = await officialFetch(`${ADVANCED_RTC_API_URL}/${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
       referer: "https://landrecords.karnataka.gov.in/service53/RTC",
     },
     body: JSON.stringify(payload),
-  });
+  }, "Advanced RTC service");
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Advanced RTC service returned HTTP ${response.status}`);
@@ -1541,16 +1586,15 @@ function buildForm(session, values, eventTarget = "", fieldConfig = fields) {
 }
 
 async function fetchOfficial(session, body, url = session.url || BHOOMI_URL) {
-  const response = await fetch(url, {
+  const response = await officialFetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
       cookie: session.cookie,
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
       referer: url,
     },
     body,
-  });
+  }, "Bhoomi official site");
 
   const text = await response.text();
   if (!response.ok) {
@@ -1563,13 +1607,12 @@ async function fetchOfficial(session, body, url = session.url || BHOOMI_URL) {
 }
 
 async function fetchOfficialText(session, url, referer = session.url || url) {
-  const response = await fetch(url, {
+  const response = await officialFetch(url, {
     headers: {
       cookie: session.cookie,
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
       referer,
     },
-  });
+  }, "Bhoomi official site");
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Official site returned HTTP ${response.status}`);
@@ -1580,11 +1623,7 @@ async function fetchOfficialText(session, url, referer = session.url || url) {
 }
 
 async function createSession() {
-  const response = await fetch(BHOOMI_URL, {
-    headers: {
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
-    },
-  });
+  const response = await officialFetch(BHOOMI_URL, {}, "Bhoomi Service2");
   const html = await response.text();
   if (!response.ok) {
     throw new Error(`Official site returned HTTP ${response.status}`);
@@ -1596,14 +1635,13 @@ async function createSession() {
 }
 
 async function createServiceSession(url, body) {
-  const response = await fetch(url, {
+  const response = await officialFetch(url, {
     method: body ? "POST" : "GET",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
-      "user-agent": "Mozilla/5.0 KarnatakaLandRecordsFetcher/1.0",
     },
     body,
-  });
+  }, "Bhoomi official site");
   const html = await response.text();
   if (!response.ok) {
     throw new Error(`Official site returned HTTP ${response.status}`);
@@ -2292,6 +2330,26 @@ async function readJson(req) {
 
 async function handleApi(req, res) {
   try {
+    if (req.method === "GET" && req.url === "/api/health") {
+      try {
+        const response = await officialFetch(BHOOMI_URL, { timeoutMs: 15000, retries: 0 }, "Bhoomi Service2");
+        json(res, 200, {
+          ok: response.ok,
+          service: "Bhoomi Service2",
+          status: response.status,
+          url: BHOOMI_URL,
+        });
+      } catch (error) {
+        json(res, 503, {
+          ok: false,
+          service: "Bhoomi Service2",
+          url: BHOOMI_URL,
+          error: error.message,
+        });
+      }
+      return;
+    }
+
     if (req.method === "GET" && req.url?.startsWith("/api/document/")) {
       const id = decodeURIComponent(req.url.split("/").pop() || "");
       const document = documents.get(id);
