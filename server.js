@@ -25,9 +25,11 @@ const REPORT_TASK_TIMEOUT_MS = 26000;
 const REPORT_ENRICH_TIMEOUT_MS = 10000;
 const OFFICIAL_FETCH_TIMEOUT_MS = 12000;
 const OFFICIAL_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+const OFFICIAL_PROXY_URL = process.env.OFFICIAL_HTTPS_PROXY || process.env.QUOTAGUARDSTATIC_URL || "";
 
 const sessions = new Map();
 const documents = new Map();
+let officialProxyDispatcher;
 
 function withReportTimeout(promise, timeoutMs, message) {
   let timeoutId;
@@ -63,6 +65,10 @@ function describeRequestError(error) {
 async function officialFetch(url, options = {}, label = "Official service") {
   const { headers = {}, timeoutMs = OFFICIAL_FETCH_TIMEOUT_MS, retries = 1, ...fetchOptions } = options;
   let lastError;
+  if (OFFICIAL_PROXY_URL && !officialProxyDispatcher) {
+    const { ProxyAgent } = await import("undici");
+    officialProxyDispatcher = new ProxyAgent(OFFICIAL_PROXY_URL);
+  }
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -70,6 +76,7 @@ async function officialFetch(url, options = {}, label = "Official service") {
       return await fetch(url, {
         ...fetchOptions,
         headers: officialHeaders(headers),
+        ...(officialProxyDispatcher ? { dispatcher: officialProxyDispatcher } : {}),
         signal: controller.signal,
       });
     } catch (error) {

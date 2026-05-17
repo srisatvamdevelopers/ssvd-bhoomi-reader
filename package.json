@@ -8,5 +8,8 @@
   },
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "undici": "^6.21.3"
   }
 }
