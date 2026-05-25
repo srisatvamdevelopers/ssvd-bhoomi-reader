@@ -21,7 +21,10 @@ const ADVANCED_RTC_API_URL = "https://landrecords.karnataka.gov.in/service53/ds_
 const OWNERSHIP_HISTORY_URL = "https://landrecords.karnataka.gov.in/service40/PendcySurveyNoWiseRpt";
 const ECHAWADI_BASE_URL = "https://rdservices.karnataka.gov.in";
 const ECHAWADI_API_URL = `${ECHAWADI_BASE_URL}/echawadi/Home`;
-const REPORT_TASK_TIMEOUT_MS = 26000;
+const REPORT_TASK_TIMEOUT_MS = 60000;
+const OLD_RTC_TASK_TIMEOUT_MS = 180000;
+const ADVANCED_DETAILS_TASK_TIMEOUT_MS = 90000;
+const OWNERSHIP_MAP_TASK_TIMEOUT_MS = 120000;
 const REPORT_ENRICH_TIMEOUT_MS = 10000;
 const OFFICIAL_FETCH_TIMEOUT_MS = 12000;
 const OFFICIAL_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -242,6 +245,11 @@ const buttons = {
   },
 };
 
+const currentPreviewButton = {
+  name: "ctl00$MainContent$btnCPreview",
+  value: "View",
+};
+
 const oldButtons = {
   tab: { name: "ctl00$MainContent$Tab3", value: "Old Year" },
   go: { id: "ctl00_MainContent_btnOGO", name: "ctl00$MainContent$btnOGO", value: "Go" },
@@ -417,8 +425,30 @@ function summarizeOfficialHtml(html) {
   };
 }
 
+function mutationStatusResultText(html) {
+  const candidates = [];
+  for (const match of html.matchAll(/<(?:span|label|div|td)\b[^>]*(?:id|class)=["'][^"']*(?:lbl|Label|msg|status|Status|result|Result)[^"']*["'][^>]*>([\s\S]*?)<\/(?:span|label|div|td)>/gi)) {
+    const text = stripTags(match[1]);
+    if (/ವಹಿವಾಟಿನ\s*ಸಂಖ್ಯೆ|ಸ್ಥಿತಿ\s*:|Transaction\s*(?:No|Number)\s*:|Status\s*:/i.test(text)) candidates.push(text);
+  }
+  for (const row of extractAllDataRows(html)) {
+    const text = row.join(" ");
+    if (/ವಹಿವಾಟಿನ\s*ಸಂಖ್ಯೆ|ಸ್ಥಿತಿ\s*:|Transaction\s*(?:No|Number)\s*:|Status\s*:/i.test(text) && !/Select District|Select Taluk|Select Hobli|Select Village/i.test(text)) {
+      candidates.push(text);
+    }
+  }
+  const visible = visibleText(html);
+  const focused = visible.match(/(?:ವಹಿವಾಟಿನ\s*ಸಂಖ್ಯೆ\s*:?\s*[^\s,]+\s*,?\s*)?ಸ್ಥಿತಿ\s*:?\s*[^.।]+[.।]?/);
+  if (focused) candidates.push(focused[0]);
+  const noPending = visible.match(/ಸ್ಥಿತಿ\s*:?\s*ಯಾವುದೇ\s+ಮ್ಯುಟೇಶನ್\s+ಬಾಕಿ\s+ಇರುವುದಿಲ್ಲ[.।]?/);
+  if (noPending) candidates.push(noPending[0]);
+  return candidates
+    .map((value) => value.replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim())
+    .find((value) => value && !/Beta Version|Logout|Select District|Select Taluk|Select Village|Surnoc No/i.test(value)) || "";
+}
+
 function parseMutationStatusSummary(html) {
-  const text = visibleText(html);
+  const text = mutationStatusResultText(html);
   const transaction = (text.match(/ವಹಿವಾಟಿನ\s*ಸಂಖ್ಯೆ\s*:?\s*([^\s,]+)/) || text.match(/Transaction\s*(?:No|Number)\s*:?\s*([^\s,]+)/i) || [])[1] || "";
   const statusRaw = (text.match(/ಸ್ಥಿತಿ\s*:?\s*([^]+?)(?=\s*(?:&copy;|©|Disclaimer|BHOOMI MONITORING|All Rights Reserved|Designed|$))/) || text.match(/Status\s*:?\s*([^]+?)(?=\s*(?:&copy;|©|Disclaimer|BHOOMI MONITORING|All Rights Reserved|Designed|$))/i) || [])[1]?.trim() || "";
   const status = statusRaw
@@ -426,17 +456,18 @@ function parseMutationStatusSummary(html) {
     .replace(/©[\s\S]*$/i, "")
     .replace(/BHOOMI MONITORING[\s\S]*$/i, "")
     .replace(/All Rights Reserved[\s\S]*$/i, "")
+    .replace(/Beta Version[\s\S]*$/i, "")
     .trim();
   const noPending = /ಯಾವುದೇ\s+ಮ್ಯುಟೇಶನ್\s+ಬಾಕಿ|no\s+mutation\s+pending/i.test(text);
   const rows = [];
   if (transaction || status || noPending) {
-    rows.push(["ವಹಿವಾಟಿನ ಸಂಖ್ಯೆ / MR Number", transaction || "-"]);
+    if (transaction) rows.push(["ವಹಿವಾಟಿನ ಸಂಖ್ಯೆ / MR Number", transaction]);
     rows.push(["ಸ್ಥಿತಿ / Status", status || (noPending ? "ಯಾವುದೇ ಮ್ಯುಟೇಶನ್ ಬಾಕಿ ಇರುವುದಿಲ್ಲ" : "-")]);
   }
   return {
     hasData: rows.length > 0,
-    text: rows.length ? rows.map((row) => row.join(": ")).join(" | ") : text.slice(0, 1400),
-    rows,
+    text: rows.length ? rows.map((row) => row.join(": ")).join(" | ") : "Mutation status was not returned for this survey.",
+    rows: rows.length ? rows : [["ಸ್ಥಿತಿ / Status", "Mutation status was not returned for this survey."]],
   };
 }
 
@@ -1302,6 +1333,54 @@ function storeTableSnapshot(title, values, rows, filename) {
   return storeDocument(Buffer.from(svg, "utf8"), "image/svg+xml", filename);
 }
 
+function previewRtcImageUrl(html, baseUrl = BHOOMI_URL) {
+  const imgMatch = html.match(/<img\b[^>]*(?:id=["']ImgSketchPage["'][^>]*src|src)=["']([^"']+)["'][^>]*>/i)
+    || html.match(/<img\b[^>]*src=["']([^"']*RTCPreviewPng[^"']*)["'][^>]*>/i);
+  return imgMatch ? new URL(decodeHtml(imgMatch[1]), baseUrl).href : "";
+}
+
+async function fetchCurrentRtcPreviewRecord(session, values, label) {
+  const previewForm = buildForm(session, values, "", currentFields);
+  previewForm.set(currentPreviewButton.name, currentPreviewButton.value);
+  await fetchOfficial(session, previewForm, session.url);
+
+  const previewPagePath = (session.html.match(/window\.open\(\s*['"]([^'"]*PreviewRTC\.aspx[^'"]*)['"]/i) || [])[1] || "PreviewRTC.aspx";
+  const previewPageUrl = new URL(previewPagePath, session.url || BHOOMI_URL).href;
+  const previewHtml = await fetchOfficialText(session, previewPageUrl, session.url || BHOOMI_URL);
+  const imageUrl = previewRtcImageUrl(previewHtml, previewPageUrl);
+  if (!imageUrl) throw new Error("Official RTC View page did not return a preview image");
+
+  const response = await officialFetch(imageUrl, {
+    headers: {
+      cookie: session.cookie,
+      referer: previewPageUrl,
+    },
+    timeoutMs: 30000,
+  }, "Current RTC preview image");
+  if (!response.ok) throw new Error(`Current RTC preview image returned HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") || "image/png";
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const storedImageUrl = storeDocument(
+    buffer,
+    contentType,
+    `current-rtc-${values.survey || "survey"}-${values.surnocLabel || values.surnoc || "surnoc"}-${values.hissaLabel || values.hissa || "hissa"}.png`,
+  );
+
+  return {
+    label: "Current RTC official View page",
+    summary: {
+      hasData: true,
+      text: "Official Current RTC View page image fetched from Bhoomi.",
+      rows: [
+        ["View", "Official RTC preview image fetched"],
+        ["Period", label || values.periodLabel || "-"],
+      ],
+    },
+    imageUrl: storedImageUrl,
+    imageClass: "current-rtc-page",
+  };
+}
+
 function emptyOwnershipHistoryData(html = "") {
   return {
     html,
@@ -1520,10 +1599,11 @@ function extractOwnerRows(rows) {
 function rtcRecordFromSummary({ mode, label, summary, values }) {
   const ownerRows = extractOwnerRows(summary.rows || []);
   const text = summary.text || "";
+  const labelYear = (label.match(/\(([^)]+)\)/) || [])[1]?.trim() || "";
   return {
     type: mode === "old" ? "Old RTC" : "Current RTC",
     period: label || values.periodLabel || "",
-    year: values.yearLabel || values.year || (label.match(/\(([^)]+)\)/) || [])[1]?.trim() || "",
+    year: labelYear || values.yearLabel || values.year || "",
     village: values.villageLabel || values.village || findValueAfter(text, "Village"),
     survey: values.survey || findValueAfter(text, "Survey No"),
     surnoc: values.surnocLabel || values.surnoc || "",
@@ -1662,9 +1742,14 @@ async function createServiceSession(url, body) {
   };
 }
 
-function firstUsableOption(select, preferredValue) {
+function firstUsableOption(select, preferredValue, preferredLabel = "") {
   if (preferredValue && select.options.some((option) => option.value === preferredValue && !/^select /i.test(option.label))) {
     return preferredValue;
+  }
+  if (preferredLabel) {
+    const normalizedLabel = String(preferredLabel).trim();
+    const byLabel = select.options.find((option) => option.label.trim() === normalizedLabel && !/^select /i.test(option.label));
+    if (byLabel) return byLabel.value;
   }
   return select.options.find((option) => option.value && !/^select /i.test(option.label) && !/^select /i.test(option.value))?.value || "";
 }
@@ -1766,7 +1851,11 @@ async function prepareSurveyFlow(session, fieldConfig, values, options = {}) {
   }
 
   if (fieldConfig.surnoc) {
-    const surnoc = firstUsableOption(selectBlock(session.html, fieldConfig.surnoc.id), values.surnoc);
+    const surnoc = firstUsableOption(
+      selectBlock(session.html, fieldConfig.surnoc.id),
+      options.preferredSurnocValue ?? values.surnoc,
+      options.preferredSurnocLabel ?? values.surnocLabel,
+    );
     if (surnoc) {
       selected.surnoc = surnoc;
       await postSelection(session, fieldConfig, "surnoc", surnoc, selected, session.url);
@@ -1774,7 +1863,11 @@ async function prepareSurveyFlow(session, fieldConfig, values, options = {}) {
   }
 
   if (fieldConfig.hissa) {
-    const hissa = firstUsableOption(selectBlock(session.html, fieldConfig.hissa.id), values.hissa);
+    const hissa = firstUsableOption(
+      selectBlock(session.html, fieldConfig.hissa.id),
+      options.preferredHissaValue ?? values.hissa,
+      options.preferredHissaLabel ?? values.hissaLabel,
+    );
     if (hissa) {
       selected.hissa = hissa;
       await postSelection(session, fieldConfig, "hissa", hissa, selected, session.url);
@@ -1798,21 +1891,14 @@ async function fetchRtcSection(mode, values) {
   const wantedPeriods = mode === "current" && values.period ? [values.period] : periodValues;
   const records = [];
   for (const period of wantedPeriods) {
-    const yearOptions = [];
-    if (mode === "old" && fieldConfig.year) {
-      const yearProbe = await createServiceSession(BHOOMI_URL);
-      await switchToOldYear(yearProbe);
-      const selectedForYearProbe = await prepareSurveyFlow(yearProbe, fieldConfig, { ...values, ...selected }, { goButton: buttonConfig.go });
-      await postSelection(yearProbe, fieldConfig, "period", period, { ...values, ...selectedForYearProbe, period }, yearProbe.url);
-      yearOptions.push(...usableOptions(selectBlock(yearProbe.html, fieldConfig.year.id)));
-    }
+    const working = await createServiceSession(BHOOMI_URL);
+    if (mode === "old") await switchToOldYear(working);
+    const selectedForPeriod = await prepareSurveyFlow(working, fieldConfig, { ...values, ...selected }, { goButton: buttonConfig.go });
+    if (fieldConfig.period) await postSelection(working, fieldConfig, "period", period, { ...values, ...selectedForPeriod, period }, working.url);
 
-    const yearsToFetch = yearOptions.length ? [yearOptions[0]] : [{ value: "", label: "" }];
+    const yearOptions = mode === "old" && fieldConfig.year ? usableOptions(selectBlock(working.html, fieldConfig.year.id)) : [];
+    const yearsToFetch = yearOptions.length ? yearOptions : [{ value: "", label: "" }];
     for (const yearOption of yearsToFetch) {
-      const working = await createServiceSession(BHOOMI_URL);
-      if (mode === "old") await switchToOldYear(working);
-      const selectedForPeriod = await prepareSurveyFlow(working, fieldConfig, { ...values, ...selected }, { goButton: buttonConfig.go });
-      if (fieldConfig.period) await postSelection(working, fieldConfig, "period", period, { ...values, ...selectedForPeriod, period }, working.url);
       const rtcValues = { ...values, ...selectedForPeriod, period };
       if (yearOption.value) {
         rtcValues.year = yearOption.value;
@@ -1832,6 +1918,20 @@ async function fetchRtcSection(mode, values) {
         summary,
         rtc: rtcRecordFromSummary({ mode, label: periodLabel, summary, values: { ...rtcValues, periodLabel, yearLabel } }),
       });
+      if (mode === "current") {
+        try {
+          records.push(await fetchCurrentRtcPreviewRecord(working, { ...rtcValues, periodLabel, yearLabel }, label));
+        } catch (error) {
+          records.push({
+            label: "Current RTC official View page",
+            summary: {
+              hasData: false,
+              text: `Could not fetch official RTC View image: ${error.message}`,
+              rows: [["Status", `Could not fetch official RTC View image: ${error.message}`]],
+            },
+          });
+        }
+      }
     }
   }
 
@@ -1851,7 +1951,10 @@ async function fetchMutationSection(kind, values) {
   const buttonConfig = kind === "status" ? mutationStatusButtons : mutationExtractButtons;
   const session = await createServiceSession(url, new URLSearchParams({ UserName: "" }));
 
-  const selected = await prepareSurveyFlow(session, fieldConfig, values);
+  const selected = await prepareSurveyFlow(session, fieldConfig, values, kind === "status" ? {
+    preferredHissaValue: "",
+    preferredHissaLabel: "*",
+  } : {});
   const form = buildForm(session, { ...values, ...selected }, "", fieldConfig);
   form.set(buttonConfig.fetch.name, buttonConfig.fetch.value);
   await fetchOfficial(session, form, url);
@@ -2237,27 +2340,27 @@ async function fetchEchawadiSection(values) {
 
 async function buildReport(values) {
   const sections = [];
-  const disabledSections = new Set(["advancedDetails", "ownershipMap"]);
+  const disabledSections = new Set();
   const selectedSections = Array.isArray(values.sections)
     ? new Set(values.sections.filter((section) => !disabledSections.has(section)))
-    : new Set(["currentRtc", "oldRtc", "khatha", "mutationStatus", "mutationRecords", "akarband", "echawadi"]);
+    : new Set(["currentRtc", "oldRtc", "khatha", "advancedDetails", "mutationStatus", "mutationRecords", "ownershipMap", "akarband", "echawadi"]);
   const tasks = [
-    ["currentRtc", () => fetchRtcSection("current", values), "Current Year RTC"],
-    ["oldRtc", () => fetchRtcSection("old", values), "Old Year RTC"],
-    ["khatha", () => fetchKhathaSection(values), "Khatha Number"],
-    ["advancedDetails", () => fetchAdvancedDetailsSection(values), "Advanced Details"],
-    ["ownershipMap", () => fetchOwnershipMapSection(values), "Ownership Map"],
-    ["akarband", () => fetchAkarbandSection(values), "Akarband"],
-    ["echawadi", () => fetchEchawadiSection(values), "eChawadi"],
-    ["mutationStatus", () => fetchMutationSection("status", values), "Mutation Status"],
-    ["mutationRecords", () => fetchMutationSection("extract", values), "Mutation Register"],
+    ["currentRtc", () => fetchRtcSection("current", values), "Current Year RTC", REPORT_TASK_TIMEOUT_MS],
+    ["oldRtc", () => fetchRtcSection("old", values), "Old Year RTC", OLD_RTC_TASK_TIMEOUT_MS],
+    ["khatha", () => fetchKhathaSection(values), "Khatha Number", REPORT_TASK_TIMEOUT_MS],
+    ["advancedDetails", () => fetchAdvancedDetailsSection(values), "Advanced Details", ADVANCED_DETAILS_TASK_TIMEOUT_MS],
+    ["ownershipMap", () => fetchOwnershipMapSection(values), "Ownership Map", OWNERSHIP_MAP_TASK_TIMEOUT_MS],
+    ["akarband", () => fetchAkarbandSection(values), "Akarband", REPORT_TASK_TIMEOUT_MS],
+    ["echawadi", () => fetchEchawadiSection(values), "eChawadi", REPORT_TASK_TIMEOUT_MS],
+    ["mutationStatus", () => fetchMutationSection("status", values), "Mutation Status", REPORT_TASK_TIMEOUT_MS],
+    ["mutationRecords", () => fetchMutationSection("extract", values), "Mutation Register", REPORT_TASK_TIMEOUT_MS],
   ].filter(([key]) => selectedSections.has(key));
 
-  sections.push(...await Promise.all(tasks.map(async ([, task, title]) => {
+  sections.push(...await Promise.all(tasks.map(async ([, task, title, timeoutMs]) => {
     try {
       return await withReportTimeout(
         task(),
-        REPORT_TASK_TIMEOUT_MS,
+        timeoutMs,
         `${title} took too long to respond from the official service.`,
       );
     } catch (error) {
@@ -2345,12 +2448,14 @@ async function handleApi(req, res) {
           service: "Bhoomi Service2",
           status: response.status,
           url: BHOOMI_URL,
+          proxyConfigured: Boolean(OFFICIAL_PROXY_URL),
         });
       } catch (error) {
         json(res, 503, {
           ok: false,
           service: "Bhoomi Service2",
           url: BHOOMI_URL,
+          proxyConfigured: Boolean(OFFICIAL_PROXY_URL),
           error: error.message,
         });
       }

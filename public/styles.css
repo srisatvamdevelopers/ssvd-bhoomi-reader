@@ -473,6 +473,17 @@ button:hover:not(:disabled) {
   background: #fff;
 }
 
+.current-rtc-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
 .ownership-map-page {
   display: block;
   width: 100%;
@@ -802,6 +813,22 @@ a {
     width: 100%;
     max-height: none;
     height: auto;
+    object-fit: contain;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .current-rtc-report-section {
+    break-before: page;
+    page-break-before: always;
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  .current-rtc-page {
+    width: 100%;
+    height: 245mm;
+    max-height: 245mm;
     object-fit: contain;
     border: 0;
     border-radius: 0;

@@ -22,7 +22,7 @@ const controls = {
   reportSections: [...document.querySelectorAll('input[name="reportSection"]')],
 };
 
-const disabledReportSections = new Set(["advancedDetails", "ownershipMap"]);
+const disabledReportSections = new Set();
 
 let sessionId = "";
 let loading = false;
@@ -326,6 +326,30 @@ function renderReport(report) {
     </section>
   ` : "";
 
+  const currentRtcPageRecords = (report.sections || [])
+    .filter((section) => section.title === "Current Year RTC")
+    .flatMap((section) => section.records || [])
+    .filter((record) => record.imageUrl);
+  const currentRtcPageSection = currentRtcPageRecords.length ? `
+    <section class="report-section current-rtc-report-section">
+      <div class="section-title"><h3>Current RTC Official Page</h3><span>Official page copy</span></div>
+      ${currentRtcPageRecords.map((record) => `
+        <article class="report-record certificate-record">
+          <header>
+            <strong>${escapeHtml(record.label || "Current RTC official page")}</strong>
+            <span>${record.summary?.hasData ? "Information found" : "No structured rows found"}</span>
+          </header>
+          <table>
+            ${(record.summary?.rows || [["Status", "Current RTC official page attached"]]).slice(0, 12).map((row) => (
+              `<tr>${row.slice(0, 8).map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`
+            )).join("")}
+          </table>
+          <img class="${escapeAttr(record.imageClass || "current-rtc-page")}" alt="${escapeAttr(record.label || "Current RTC official page")}" src="${escapeAttr(record.imageUrl)}">
+        </article>
+      `).join("")}
+    </section>
+  ` : "";
+
   const sectionCards = (report.sections || []).filter((section) => !/RTC/i.test(section.title)).map((section) => {
     const records = (section.records || []).map((record) => {
       const rows = record.summary?.rows?.map((row) => (
@@ -378,6 +402,7 @@ function renderReport(report) {
       ${chips.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value || "-")}</strong></div>`).join("")}
     </div>
     ${rtcSection}
+    ${currentRtcPageSection}
     ${sectionCards}
     <section class="report-section related-services-section">
       <div class="section-title"><h3>Other Bhoomi Options</h3><span>Official links</span></div>
